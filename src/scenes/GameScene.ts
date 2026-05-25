@@ -35,8 +35,10 @@ const STARTING_LIVES = 3;
 const POWERUP_DROP_RATE = 0.20;
 
 // Snap threshold: distância máxima do centro do corredor pra permitir mudança de direção.
-// Sem isso, jogador precisaria parar exatamente no centro pra virar — frustante.
-const TURN_SNAP_THRESHOLD = 8;
+// Generoso pra evitar "ficar preso no cantinho não conseguindo virar" — meio TILE
+// dá mais espaço de tolerância sem causar jumps visuais grandes (player já tá
+// próximo do centro pq tava se movendo num eixo).
+const TURN_SNAP_THRESHOLD = 14;
 
 // ============================================================================
 // TIPOS
@@ -402,13 +404,16 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnEnemies() {
-    // Pool de tiles candidatos: EMPTY, longe do spawn (Manhattan ≥6).
+    // Pool de tiles candidatos: EMPTY, longe do spawn (Manhattan ≥6), com PELO
+    // MENOS 1 saída — senão o inimigo nasce preso (todos os 4 vizinhos podem
+    // ser parede/brick em densidade alta).
     const candidates: Array<[number, number]> = [];
     for (let r = 1; r < this.gridRows - 1; r++) {
       for (let c = 1; c < this.gridCols - 1; c++) {
         if (this.tiles[r][c] !== TileType.EMPTY) continue;
         const distFromSpawn = Math.abs(r - 1) + Math.abs(c - 1);
         if (distFromSpawn < 6) continue;
+        if (this.getExits(r, c).length === 0) continue;
         candidates.push([r, c]);
       }
     }
@@ -416,10 +421,31 @@ export class GameScene extends Phaser.Scene {
 
     for (const cfg of this.phaseConfig.enemies) {
       for (let i = 0; i < cfg.count; i++) {
-        const slot = candidates.pop();
-        if (!slot) break; // falta de espaço (extremamente raro)
-        const [r, c] = slot;
-        this.createEnemy(cfg.kind, r, c);
+        let slot = candidates.pop();
+        if (!slot) {
+          // Fallback: qualquer EMPTY longe do spawn, e abre 1 vizinho a marteladas
+          for (let r = 1; r < this.gridRows - 1; r++) {
+            for (let c = 1; c < this.gridCols - 1; c++) {
+              if (this.tiles[r][c] !== TileType.EMPTY) continue;
+              if (Math.abs(r - 1) + Math.abs(c - 1) < 6) continue;
+              slot = [r, c];
+              break;
+            }
+            if (slot) break;
+          }
+          if (!slot) break;
+          // Limpa 1 brick vizinho se preciso
+          const dirs: Array<[number, number]> = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+          for (const [dx, dy] of dirs) {
+            const nr = slot[0] + dy, nc = slot[1] + dx;
+            if (this.tiles[nr]?.[nc] === TileType.BRICK) {
+              this.tiles[nr][nc] = TileType.EMPTY;
+              this.renderTile(nr, nc);
+              break;
+            }
+          }
+        }
+        this.createEnemy(cfg.kind, slot[0], slot[1]);
       }
     }
   }
@@ -570,7 +596,7 @@ export class GameScene extends Phaser.Scene {
   private updatePlayer(_time: number, dt: number) {
     if (!this.playerAlive) return;
 
-    // Input → direção desejada
+    // ---- Input: pega 1 direção (Bomberman é 4-way, sem diagonal). ----
     let wantX: -1 | 0 | 1 = 0;
     let wantY: -1 | 0 | 1 = 0;
     if (this.keys.LEFT.isDown || this.keys.A.isDown) wantX = -1;
@@ -578,42 +604,74 @@ export class GameScene extends Phaser.Scene {
     if (this.keys.UP.isDown || this.keys.W.isDown) wantY = -1;
     else if (this.keys.DOWN.isDown || this.keys.S.isDown) wantY = 1;
 
-    // Priorize uma direção (no Bomberman não tem diagonal). Se ambos pressionados,
-    // mantém a atual se possível, senão escolhe um.
+    // Se 2 eixos pressionados, prefere o PERPENDICULAR ao atual (intenção de virar).
+    // Se parado, prefere horizontal.
     if (wantX !== 0 && wantY !== 0) {
-      if (this.playerDirX !== 0) wantY = 0;
-      else wantX = 0;
+      if (this.playerDirX !== 0) wantX = 0;       // já tava horizontal → vira vertical
+      else if (this.playerDirY !== 0) wantY = 0;  // já tava vertical → vira horizontal
+      else wantY = 0;                              // parado → horizontal default
     }
 
-    // Se quer mover perpendicular ao atual, checa snap pro centro do corredor.
-    if (wantX !== 0 && this.playerDirY !== 0) {
-      // Vertical → quer horizontal: precisa estar perto do centro horizontal do tile
-      const { c } = this.pixelToTile(this.playerPx, this.playerPy);
-      const centerX = this.gridOffsetX + c * TILE + TILE / 2;
-      if (Math.abs(this.playerPx - centerX) < TURN_SNAP_THRESHOLD) {
-        this.playerPx = centerX;
+    const tile = this.pixelToTile(this.playerPx, this.playerPy);
+    const center = this.tileToPixel(tile.r, tile.c);
+    const dxFromCenter = Math.abs(this.playerPx - center.x);
+    const dyFromCenter = Math.abs(this.playerPy - center.y);
+
+    const wantsAny = wantX !== 0 || wantY !== 0;
+    const moving = this.playerDirX !== 0 || this.playerDirY !== 0;
+
+    // ---- CASE 1: input solto + parado → fica parado ----
+    if (!wantsAny && !moving) {
+      // no-op
+    }
+    // ---- CASE 2: input solto + movendo → para no centro da tile atual ----
+    else if (!wantsAny && moving) {
+      this.playerDirX = 0;
+      this.playerDirY = 0;
+      this.playerPx = center.x;
+      this.playerPy = center.y;
+    }
+    // ---- CASE 3: parado + input → começa a mover. Snap pro centro do tile pra
+    //              garantir alinhamento perfeito antes de andar. ----
+    else if (wantsAny && !moving) {
+      this.playerPx = center.x;
+      this.playerPy = center.y;
+      this.playerDirX = wantX;
+      this.playerDirY = wantY;
+    }
+    // ---- CASE 4: input igual ao atual → continua igual ----
+    else if (wantX === this.playerDirX && wantY === this.playerDirY) {
+      // no-op
+    }
+    // ---- CASE 5: input é oposto ao atual → reverte instantaneamente ----
+    else if ((wantX !== 0 && wantX === -this.playerDirX) ||
+             (wantY !== 0 && wantY === -this.playerDirY)) {
+      this.playerDirX = wantX;
+      this.playerDirY = wantY;
+    }
+    // ---- CASE 6: input é perpendicular → snap BOTH axes pro centro do tile
+    //              atual antes de mudar de direção. Sem snap dos 2, player fica
+    //              off-center no eixo que tava andando e gruda em paredes. ----
+    else {
+      const turningToHorizontal = wantX !== 0 && this.playerDirX === 0;
+      const turningToVertical = wantY !== 0 && this.playerDirY === 0;
+
+      if (turningToHorizontal && dyFromCenter < TURN_SNAP_THRESHOLD) {
+        this.playerPx = center.x;
+        this.playerPy = center.y;
         this.playerDirX = wantX;
         this.playerDirY = 0;
-      }
-    } else if (wantY !== 0 && this.playerDirX !== 0) {
-      const { r } = this.pixelToTile(this.playerPx, this.playerPy);
-      const centerY = this.gridOffsetY + r * TILE + TILE / 2;
-      if (Math.abs(this.playerPy - centerY) < TURN_SNAP_THRESHOLD) {
-        this.playerPy = centerY;
+      } else if (turningToVertical && dxFromCenter < TURN_SNAP_THRESHOLD) {
+        this.playerPx = center.x;
+        this.playerPy = center.y;
         this.playerDirX = 0;
         this.playerDirY = wantY;
       }
-    } else if ((wantX !== 0 || wantY !== 0) && this.playerDirX === 0 && this.playerDirY === 0) {
-      // Parado, direção nova
-      this.playerDirX = wantX;
-      this.playerDirY = wantY;
-    } else if (wantX === 0 && wantY === 0) {
-      // Soltou tudo
-      this.playerDirX = 0;
-      this.playerDirY = 0;
+      // Senão (fora do snap threshold), ignora o input perpendicular nesta
+      // frame — player continua na direção atual até chegar perto de um centro.
     }
 
-    // Tenta mover na direção atual
+    // ---- Tenta mover na direção atual ----
     if (this.playerDirX !== 0 || this.playerDirY !== 0) {
       const nextX = this.playerPx + this.playerDirX * this.playerSpeed * dt;
       const nextY = this.playerPy + this.playerDirY * this.playerSpeed * dt;
@@ -621,10 +679,10 @@ export class GameScene extends Phaser.Scene {
         this.playerPx = nextX;
         this.playerPy = nextY;
       } else {
-        const { r, c } = this.pixelToTile(this.playerPx, this.playerPy);
-        const center = this.tileToPixel(r, c);
-        if (this.playerDirX !== 0) this.playerPx = center.x;
-        if (this.playerDirY !== 0) this.playerPy = center.y;
+        // Bloqueou: snap pro centro da tile atual (não muda direção — usuário
+        // pode estar segurando a tecla contra parede).
+        this.playerPx = center.x;
+        this.playerPy = center.y;
       }
     }
 
@@ -1011,11 +1069,19 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  // Checa se o inimigo pode entrar na próxima tile na direção (dx, dy).
+  // Antes olhava só 4px à frente — falso positivo, pq 4px ainda está na tile atual.
+  // Agora checa a tile inteira na direção: se for parede/brick/bomba, não pode.
   private canMove(e: Enemy, dx: number, dy: number): boolean {
     if (dx === 0 && dy === 0) return false;
-    const nextX = e.px + dx * 4;
-    const nextY = e.py + dy * 4;
-    return !this.actorCollidesAt(nextX, nextY, (PLAYER_SIZE - 4) / 2);
+    const tile = this.pixelToTile(e.px, e.py);
+    const nr = tile.r + dy;
+    const nc = tile.c + dx;
+    if (nr < 0 || nr >= this.gridRows || nc < 0 || nc >= this.gridCols) return false;
+    const t = this.tiles[nr][nc];
+    if (t === TileType.WALL || t === TileType.BRICK) return false;
+    if (this.bombAt(nr, nc)) return false;
+    return true;
   }
 
   private pickNewEnemyDir(e: Enemy) {

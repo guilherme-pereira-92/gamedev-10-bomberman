@@ -176,6 +176,17 @@ O laranja `#ff4500` fica restrito a: o sprite do player, o pulso do timer da bom
 ### 2026-05-25 — design inicial
 Tile fixado em 40px com grid 15×11 pra coerência visual com o resto da jornada (sem usar tela toda). Curva de dificuldade em 5 fases definida por mudança *qualitativa* de IA (random → avoid-flame → pursuit → boss), não por inflação numérica. Densidade de brick cai sutilmente nas fases com IA esperta porque IA precisa de espaço pra demonstrar inteligência. Acento `#ff4500` reservado pro player + pulso de bomba + flash de explosão.
 
+### 2026-05-25 — terminologia: "IA" = algoritmo, não machine learning
+
+Conversamos e ficou claro que vale registrar: quando o doc fala "IA dos inimigos", **não é** machine learning, neural network, LLM ou modelo treinado. É vocabulário tradicional de game dev pra "algoritmo de comportamento de NPC". Especificamente no Bomberman:
+
+- **Balloom** = `Math.random()` escolhendo direção em intersecções
+- **Oneal** = mesmo random + tendência a continuar reto
+- **Doll** = random + filtro `if (flameAt(...)) skip`
+- **Pass / Pontan** = BFS (busca em largura — algoritmo clássico de grafo, 1959)
+
+Tudo é `if`/`else`, loops e `Math.random`. O termo "IA" virou padrão em game dev muito antes do boom de ML, daí a confusão. Mantendo a palavra "IA" onde já tá pra não reescrever metade do doc, mas a partir daqui usando "comportamento" preferencialmente.
+
 ### 2026-05-25 — fix: player travava na própria bomba + BOMB_TIMER 2000 → 2500
 
 **Bug**: o `actorCollidesAt` checava 4 cantos do bbox do player. Quando o player tenta sair da tile da bomba, os cantos da borda **trailing** ainda tocam a tile da bomba. O check fazia `inSameTile(player_center, bomb_tile)` — assim que o center cruza pra próxima tile, isso retorna false, e os cantos trailing veem a bomba como sólida. Resultado: player gruda na bomba que acabou de plantar.
@@ -185,3 +196,28 @@ Tile fixado em 40px com grid 15×11 pra coerência visual com o resto da jornada
 **Calibração**: aproveitei pra bumpar `BOMB_TIMER` de 2000ms (canônico clássico) pra 2500ms. Com o bug do travamento, sair vivo era impossível mesmo se o timer fosse 5s. Mas mesmo depois do fix, 2000ms exige reação rápida demais pra um jogador novo no Bomberman — 2500ms dá folga sem mudar significativamente o feel.
 
 Também aumentei `FLAME_PULSE_WARN` de 500 → 600ms (anel pulsa mais forte nos últimos 600ms antes da detonação) pra dar feedback visual ligeiramente mais antecipado de "tá explodindo agora".
+
+### 2026-05-25 — fix: player travava no canto pra virar + movimento descentralizado
+
+**Bug 1 — snap só num eixo**: ao virar de horizontal pra vertical (ou vice-versa), o código alinhava só o eixo perpendicular pro centro do tile. O eixo que o player tava andando ficava onde tava — possivelmente entre dois centros de linha. Resultado: player saia andando perpendicularmente "descentralizado" e batia em paredes do tile vizinho.
+
+**Bug 2 — sem snap ao parar**: soltar a tecla deixava o player onde tava, sem alinhar ao centro. Depois, ao pressionar perpendicular, a snap exigia ≤8px do centro pra virar. Se o player tava 10px off, não virava.
+
+**Fix**: reescrita do `updatePlayer` com modelo de casos explícitos (6 cases: stopped/no-input, stopped/input, moving/no-input, moving/same-dir, moving/opposite-dir, moving/perpendicular). Casos relevantes:
+- **Stopped + input**: snap pro centro do tile antes de começar a mover. Garante alinhamento perfeito.
+- **Moving + no input**: para e snap pro centro do tile atual. Garante que parar deixa o player em tile center.
+- **Moving + perpendicular**: snap dos **2 eixos** pro centro do tile atual antes de mudar direção. Sem isso o eixo "transitivo" fica off-center.
+
+Também aumentei `TURN_SNAP_THRESHOLD` de 8 → 14 (mais de 1/3 do tile). Mais permissivo pra virar sem causar jumps visuais notáveis.
+
+### 2026-05-25 — fix: inimigos não se moviam
+
+**Bug 1 — spawn em tile sem saída**: com brick density de 40-55%, o pool de candidatos pra spawn de inimigos incluía tiles EMPTY cujos 4 vizinhos eram TODOS bloqueados (parede ou brick). `pickNewEnemyDir` retornava `dirX=0, dirY=0` (sem saída) e o inimigo ficava preso no spawn. Em fases com 5 inimigos, era provável que pelo menos 1 caísse nessa armadilha.
+
+**Fix**: filtro do pool de candidatos pra exigir `getExits(r, c).length > 0` (pelo menos 1 vizinho não-bloqueado). Fallback se faltar candidatos: pega qualquer tile EMPTY e abre 1 brick vizinho a marteladas.
+
+**Bug 2 — `canMove` olhava só 4px à frente**: o método de checagem de movimento dos inimigos olhava só 4 pixels na direção, o que ainda estava DENTRO do tile atual. Resultado: o `canMove` retornava `true` (pode mover) mesmo quando o próximo tile era brick/parede. Inimigos como Oneal/Doll usavam isso pra decidir "continua reto?" — eles continuavam batendo contra brick em vez de virar nas intersecções, ficando parados.
+
+**Fix**: `canMove` agora checa a próxima TILE inteira (`pixelToTile + dy/dx`) em vez de só os pixels adjacentes. Consistente com `getExits`.
+
+**Lição arquitetural**: ter 2 funções com a mesma "intenção semântica" (checar se pode entrar na próxima tile) implementadas de jeitos diferentes é receita pra inconsistência. As 2 deveriam ter sido uma só desde o começo. Anotando pra não cair no mesmo padrão nos próximos jogos.
