@@ -175,3 +175,13 @@ O laranja `#ff4500` fica restrito a: o sprite do player, o pulso do timer da bom
 
 ### 2026-05-25 — design inicial
 Tile fixado em 40px com grid 15×11 pra coerência visual com o resto da jornada (sem usar tela toda). Curva de dificuldade em 5 fases definida por mudança *qualitativa* de IA (random → avoid-flame → pursuit → boss), não por inflação numérica. Densidade de brick cai sutilmente nas fases com IA esperta porque IA precisa de espaço pra demonstrar inteligência. Acento `#ff4500` reservado pro player + pulso de bomba + flash de explosão.
+
+### 2026-05-25 — fix: player travava na própria bomba + BOMB_TIMER 2000 → 2500
+
+**Bug**: o `actorCollidesAt` checava 4 cantos do bbox do player. Quando o player tenta sair da tile da bomba, os cantos da borda **trailing** ainda tocam a tile da bomba. O check fazia `inSameTile(player_center, bomb_tile)` — assim que o center cruza pra próxima tile, isso retorna false, e os cantos trailing veem a bomba como sólida. Resultado: player gruda na bomba que acabou de plantar.
+
+**Fix**: adicionado flag `playerOverlap` por bomba (true ao plantar). Update do player limpa o flag quando o **center** sai da tile da bomba. O collision check só permite atravessar bombas com `playerOverlap=true`, e só pro player (inimigos nunca atravessam bomba). Esse é o modelo canônico do Bomberman — "você fica em cima até sair, depois não pode voltar".
+
+**Calibração**: aproveitei pra bumpar `BOMB_TIMER` de 2000ms (canônico clássico) pra 2500ms. Com o bug do travamento, sair vivo era impossível mesmo se o timer fosse 5s. Mas mesmo depois do fix, 2000ms exige reação rápida demais pra um jogador novo no Bomberman — 2500ms dá folga sem mudar significativamente o feel.
+
+Também aumentei `FLAME_PULSE_WARN` de 500 → 600ms (anel pulsa mais forte nos últimos 600ms antes da detonação) pra dar feedback visual ligeiramente mais antecipado de "tá explodindo agora".

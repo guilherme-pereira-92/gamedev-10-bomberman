@@ -15,9 +15,11 @@ const TILE = 40;
 const CANVAS_W = 800;
 const CANVAS_H = 600;
 
-const BOMB_TIMER = 2000;       // ms até detonar — canônico do Bomberman
+const BOMB_TIMER = 2500;       // ms até detonar. Canônico do Bomberman é 2000;
+                                // bumpado pra 2500 dá folga pra jogador novo escapar
+                                // sem mudar muito o feel.
 const FLAME_DURATION = 500;    // ms que o tile mata
-const FLAME_PULSE_WARN = 500;  // ms antes da detonação onde o anel pulsa mais forte
+const FLAME_PULSE_WARN = 600;  // ms antes da detonação onde o anel pulsa mais forte
 
 const PLAYER_BASE_SPEED = 100;     // px/s — atravessa o grid em ~6s
 const PLAYER_SIZE = 26;            // sprite ligeiramente menor que TILE pra passar nos corredores
@@ -56,6 +58,11 @@ interface Bomb {
   radius: number;
   sprite: Phaser.GameObjects.Arc;
   ring: Phaser.GameObjects.Arc;
+  // True enquanto o player ainda está em cima da bomba (a tile que ele plantou).
+  // Vira false no momento que o player center sai pra outra tile.
+  // Sem isso o player travaria na bomba que acabou de plantar — o bbox tem
+  // cantos que ainda tocam a tile da bomba enquanto o center já saiu.
+  playerOverlap: boolean;
 }
 
 interface Flame {
@@ -610,15 +617,23 @@ export class GameScene extends Phaser.Scene {
     if (this.playerDirX !== 0 || this.playerDirY !== 0) {
       const nextX = this.playerPx + this.playerDirX * this.playerSpeed * dt;
       const nextY = this.playerPy + this.playerDirY * this.playerSpeed * dt;
-      if (!this.actorCollidesAt(nextX, nextY, PLAYER_SIZE / 2)) {
+      if (!this.actorCollidesAt(nextX, nextY, PLAYER_SIZE / 2, /*isPlayer*/ true)) {
         this.playerPx = nextX;
         this.playerPy = nextY;
       } else {
-        // Snap pro centro do tile atual quando bate em algo (evita encostar e ficar travado)
         const { r, c } = this.pixelToTile(this.playerPx, this.playerPy);
         const center = this.tileToPixel(r, c);
         if (this.playerDirX !== 0) this.playerPx = center.x;
         if (this.playerDirY !== 0) this.playerPy = center.y;
+      }
+    }
+
+    // Atualiza playerOverlap das bombas: quando player center sai da tile da bomba,
+    // a bomba vira sólida (não pode entrar de novo).
+    const playerTile = this.pixelToTile(this.playerPx, this.playerPy);
+    for (const b of this.bombs) {
+      if (b.playerOverlap && (b.gridX !== playerTile.c || b.gridY !== playerTile.r)) {
+        b.playerOverlap = false;
       }
     }
 
@@ -638,10 +653,9 @@ export class GameScene extends Phaser.Scene {
   // ==========================================================================
 
   // Checa se o actor de bounding circle (cx, cy, radius) colide com WALL/BRICK/BOMB.
-  // Bomb sob os próprios pés do actor recém-plantado NÃO bloqueia (até ele sair).
-  private actorCollidesAt(cx: number, cy: number, radius: number): boolean {
-    // Testa as 4 quinas do bbox do actor
-    const margin = radius - 2; // pequena folga pra evitar gluing
+  // isPlayer=true permite atravessar bombas com playerOverlap=true (a que acabou de plantar).
+  private actorCollidesAt(cx: number, cy: number, radius: number, isPlayer = false): boolean {
+    const margin = radius - 2;
     const corners = [
       [cx - margin, cy - margin],
       [cx + margin, cy - margin],
@@ -653,23 +667,23 @@ export class GameScene extends Phaser.Scene {
       if (r < 0 || r >= this.gridRows || c < 0 || c >= this.gridCols) return true;
       const t = this.tiles[r][c];
       if (t === TileType.WALL || t === TileType.BRICK) return true;
-      // Bombas: blocking, exceto se o actor ainda está em cima dela
-      if (this.bombAt(r, c)) {
-        const inSameTile = this.pixelTileMatches(cx, cy, r, c);
-        if (!inSameTile) return true;
+      const bomb = this.bombAtFull(r, c);
+      if (bomb) {
+        // Player passa pela bomba que ainda tá sob ele. Inimigos nunca passam.
+        if (isPlayer && bomb.playerOverlap) continue;
+        return true;
       }
     }
     return false;
   }
 
-  private pixelTileMatches(px: number, py: number, r: number, c: number): boolean {
-    const t = this.pixelToTile(px, py);
-    return t.r === r && t.c === c;
+  private bombAt(r: number, c: number): boolean {
+    return this.bombAtFull(r, c) !== null;
   }
 
-  private bombAt(r: number, c: number): boolean {
-    for (const b of this.bombs) if (b.gridX === c && b.gridY === r) return true;
-    return false;
+  private bombAtFull(r: number, c: number): Bomb | null {
+    for (const b of this.bombs) if (b.gridX === c && b.gridY === r) return b;
+    return null;
   }
 
   // ==========================================================================
@@ -691,6 +705,7 @@ export class GameScene extends Phaser.Scene {
       radius: this.playerRadius,
       sprite,
       ring,
+      playerOverlap: true, // player tá em cima ao plantar — pode atravessar até sair
     };
     this.bombs.push(bomb);
     playTone(330, 80, "triangle", 0.06);
