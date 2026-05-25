@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "number": 10,
+  "slug": "10-bomberman",
+  "title": "Bomberman",
+  "shortDescription": "Grid 2D, bombas em cruz, IA que decide se foge ou morre. Primeiro jogo da jornada com design doc completo.",
+  "stack": ["TypeScript", "Phaser 3", "Vite"],
+  "concepts": [
+    "grid 2D estruturado com múltiplas camadas lógicas (tile/bomb/flame/powerup/exit)",
+    "conversão constante pixel-space ↔ grid-space (movimento smooth com plant snapped)",
+    "propagação iterativa de explosão com reação em cadeia (chama detona bomba na hora)",
+    "BFS em grid pra IA de perseguição (primeiro algoritmo de grafo da jornada)",
+    "state machine de IA com 3 níveis de \"consciência\": random walk, avoid-flame, BFS pursuit",
+    "tile destrutível como container de loot (20% drop rate)",
+    "layout procedural com constraints (spawn 3×3 clear, exit acessível)",
+    "5 fases com escala QUALITATIVA (não numérica) — IA evolui, não números"
+  ],
+  "publishedAt": "2026-05-25",
+  "live": "https://guilherme-pereira-92.github.io/gamedev-10-bomberman/",
+  "repo": "https://github.com/guilherme-pereira-92/gamedev-10-bomberman",
+  "cover": "screenshots/cover.png",
+  "designDoc": "DESIGN.md",
+  "playable": true,
+  "mobile": "desktop-only"
+}
